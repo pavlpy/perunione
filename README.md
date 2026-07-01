@@ -39,3 +39,15 @@ This project is open-source and licensed under the **GNU General Public License 
 In the spirit of Richard Stallman and true digital freedom, if you modify or use `perunione` in your own software, **you are strictly obligated to open-source your entire project**. Keep the code free, keep the crypto strong. 
 
 Feel free to audit, or use it to hide from global surveillance.
+
+
+## ⚠️ Important Security Notes & Constraints
+
+### 1. Transport & Addressing Layer Abstraction
+`perunione` is strictly a cryptographic state engine and data stream chunker. **It does not handle network routing, peer addressing, or packet delivery guarantees.** 
+* It is the developer's absolute responsibility to wrap the exported 1 KB raw `Packet` structures into UDP/IP, raw Ethernet frames, or your custom transport layer.
+
+## 📖 Documentation & Integration
+
+To see the detailed function reference, understand the architecture, and look at practical code snippets on how to use this library, see [using.md](using.md).
+
