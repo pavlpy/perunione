@@ -56,7 +56,6 @@ void proto_init(perunione_context *ctx) {
     ctx->next_cont = malloc(sizeof(data_container));
     memset(ctx->next_cont, 0, sizeof(data_container));
     ctx->first_cont->next = (char *)ctx->next_cont;
-    ctx->container_count = 2;
 }
 // some encryption for op_code 
 inline static uint8_t encrypt_op_code(uint8_t byte, uint32_t our_pack_id){
@@ -79,7 +78,6 @@ void proto_start_handshake(perunione_context *ctx) {
     PROTO_LOG("[ПРОТОКОЛ] Запущено рукопожатие");
     ctx->last_getted_pack_id = 0;
     ctx->last_sended_pack_id = 0;
-    ctx->rx_counter = 0;
     Packet pack = {0};
     Packet_mask *packmask = (Packet_mask *)&pack;
     packmask->op_code = OP_INIT ^ ctx->key_encrypt_code[0];
@@ -203,7 +201,6 @@ void proto_reset(perunione_context *ctx) {
     ctx->last_getted_pack_id = 0;
     ctx->last_sended_pack_id = 0;
     ctx->tx_counter = 0;
-    ctx->rx_counter = 0;
     reset_containers(ctx);
 }
 
@@ -221,7 +218,7 @@ inline static void send_conerr(perunione_context *ctx) {
 
 /* Reject duplicate or out-of-order packet IDs */
 static bool check_pack_id(perunione_context *ctx, uint32_t id) {
-    uint32_t PACK_ID_DELTA = get_dynamic_delta(ctx, ctx->rx_counter);
+    uint32_t PACK_ID_DELTA = get_dynamic_delta(ctx, ctx->tx_counter);
     if (id != ctx->last_getted_pack_id + PACK_ID_DELTA) {
         PROTO_LOG("[ПРОТОКОЛ] Неверный ID пакета: ожидалось %d, получен %i",
                ctx->last_getted_pack_id + PACK_ID_DELTA, id);
@@ -234,7 +231,7 @@ static bool check_pack_id(perunione_context *ctx, uint32_t id) {
 
 /* Process one incoming packet from the ring buffer */
 void proto_update(perunione_context *ctx) {
-    uint32_t PACK_ID_DELTA = get_dynamic_delta(ctx, ctx->rx_counter);
+    uint32_t PACK_ID_DELTA = get_dynamic_delta(ctx,ctx->tx_counter);
     Packet pack;
     if (!__last_getted_pack(ctx, &pack)) return;
     Packet_mask *packmask = (Packet_mask *)&pack;
@@ -242,7 +239,10 @@ void proto_update(perunione_context *ctx) {
     if (ctx->session_status != STATUS_CONNECTED) {
         op ^= ctx->key_encrypt_code[0]; 
     } else {
-        uint32_t expected_id = ctx->last_getted_pack_id + PACK_ID_DELTA;
+        uint32_t expected_id = ctx->last_getted_pack_id + PACK_ID_DELTA; 
+        if (ctx->last_getted_pack_id == 0 && ctx->tx_counter == 0) {
+            expected_id = 0; 
+        }
         op = decrypt_op_code(op, expected_id);
     }
 
@@ -265,7 +265,7 @@ void proto_update(perunione_context *ctx) {
             ECPoint my_public;
             ecdh_generate_public(&my_public, &ctx->my_private_key);
             Packet_mask response = {0};
-            response.op_code = OP_INIT ^ ctx->key_encrypt_code[0];
+            response.op_code = OP_INIT;
             response.pack_id = ctx->last_sended_pack_id;
             memcpy(response.payload, &my_public, sizeof(ECPoint));
             for (int i = 0; i < 128; i++) {
@@ -299,7 +299,6 @@ void proto_update(perunione_context *ctx) {
         int len = packmask->data_len;
         if (check_pack_id(ctx, packmask->pack_id))
             ctx->payload_handler(packmask->payload, len);
-        ctx->rx_counter++;
         break;
     }
 
@@ -310,7 +309,6 @@ void proto_update(perunione_context *ctx) {
                 data_container *container = alloc_container(ctx);
                 memcpy(container->curr, packmask->payload, packmask->data_len);
             }
-            ctx->rx_counter++;
         }
         break;
     }
@@ -330,13 +328,14 @@ void proto_update(perunione_context *ctx) {
                 for (uint32_t ci = 0; ci < num_data; ci++) {
                     memcpy(result + ci * 1000, cc->curr,
                            ci == num_data - 1 ? packmask->data_len : 1000);
+                    data_container *last_ptr = cc;
                     cc = (data_container *)cc->next;
+                    free(last_ptr);
                 }
                 ctx->payload_handler(result, result_len);
                 free(result);
                 reset_containers(ctx);
             }
-            ctx->rx_counter++;
         }
         break;
     }

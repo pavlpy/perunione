@@ -15,9 +15,6 @@
 /* Encrypted payload length per packet (do not change) */
 #define DATA_LEN 1023
 
-/* Packet ID increment between consecutive packets */
-#define PACK_ID_DELTA 3
-
 /* Re-key after this many transmitted packets */
 #define KEY_REFRESH_RATE 200
 
@@ -40,6 +37,7 @@ typedef struct {
 typedef struct contx {
     SessionStatus session_status;
     uint16_t      tx_counter;
+    uint16_t      rx_counter;
     uint32_t      last_sended_pack_id;
     uint32_t      last_getted_pack_id;
 
@@ -65,6 +63,9 @@ typedef struct contx {
     data_container *first_cont;
     data_container *next_cont;
     uint64_t        container_count;
+
+    /* Public key encryption code(XOR passport)*/
+    char key_encrypt_code[128];
 
     /* Callback: called with decrypted payload */
     void (*payload_handler)(const char *data, int len);

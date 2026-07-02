@@ -1,8 +1,5 @@
-#include "decoencoder.h"
-#include "ellyptic.h"
-#include "ext_intr.h"
+#include "perunione.h"
 #include "net_transport.h"
-#include "proto_logic.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,11 +10,32 @@
 #define SELECT_TIMEOUT_MS 100
 #define SELECT_TIMEOUT_US (SELECT_TIMEOUT_MS * 1000)
 
+static perunione_context ctx;
+
+static void load_passport_key(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "[!] Не удалось открыть %s: ", path);
+        perror("");
+        fprintf(stderr, "[!] key_encrypt_code будет нулевым (MITM уязвимость)\n");
+        return;
+    }
+    size_t n = fread(ctx.key_encrypt_code, 1, 128, f);
+    fclose(f);
+    if (n != 128) {
+        fprintf(stderr, "[!] Прочитано только %zu байт из %s (ожидалось 128)\n", n, path);
+        fprintf(stderr, "[!] key_encrypt_code будет нулевым (MITM уязвимость)\n");
+        memset(ctx.key_encrypt_code, 0, 128);
+    } else {
+        printf("[*] key_encrypt_code загружен из %s\n", path);
+    }
+}
+
 static void show_ciphertext_preview(void) {
-    if (tosend_count == 0) return;
-    uint8_t last = (tosend_tail - 1) & BUF_MASK;
+    if (ctx.tosend_count == 0) return;
+    uint8_t last = (ctx.tosend_tail - 1) & BUF_MASK;
     char preview[11];
-    memcpy(preview, tosend[last].cont + PAYLOAD_OFFSET, 10);
+    memcpy(preview, ctx.tosend[last].cont + PAYLOAD_OFFSET, 10);
     preview[10] = '\0';
     printf("[ШИФР] первые 10 символов payload: \"%s\"\n", preview);
 }
@@ -48,16 +66,20 @@ int main(int argc, char **argv) {
         }
     }
 
-    init_dectbl();
-    init_proto(on_payload_received);
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.payload_handler = on_payload_received;
+
+    load_passport_key("passport.key");
+
+    proto_init(&ctx);  // calls init_dectbl() internally
     net_transport_init(host_port, peer_ip, peer_port);
 
     printf("Пир %s:%d, /connect /restart /quit\n\n", peer_ip, peer_port);
 
     char input[2048];
     while (1) {
-        net_transport_tick();
-        proto_update();
+        net_transport_tick(&ctx);
+        proto_update(&ctx);
 
         fd_set rfds;
         FD_ZERO(&rfds);
@@ -79,21 +101,21 @@ int main(int argc, char **argv) {
         if (strcmp(input, "/quit") == 0) break;
 
         if (strcmp(input, "/connect") == 0) {
-            if (session_status == STATUS_CONNECTED) {
+            if (ctx.session_status == STATUS_CONNECTED) {
                 printf("[*] Уже подключено.\n");
             } else {
-                proto_start_handshake();
+                proto_start_handshake(&ctx);
             }
             continue;
         }
 
         if (strcmp(input, "/restart") == 0) {
-            if (session_status != STATUS_DISCONNECTED) {
-                proto_send_disconnect();
+            if (ctx.session_status != STATUS_DISCONNECTED) {
+                proto_send_disconnect(&ctx);
             }
-            proto_reset();
-            net_transport_tick();
-            proto_start_handshake();
+            proto_reset(&ctx);
+            net_transport_tick(&ctx);
+            proto_start_handshake(&ctx);
             continue;
         }
 
@@ -102,12 +124,12 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        if (session_status != STATUS_CONNECTED) {
+        if (ctx.session_status != STATUS_CONNECTED) {
             printf("[*] Нет соединения. Используйте /connect.\n");
             continue;
         }
 
-        proto_send_data(input, (int)slen + 1);
+        proto_send_data(&ctx, input, (int)slen + 1);
         show_ciphertext_preview();
     }
 

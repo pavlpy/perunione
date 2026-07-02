@@ -1,5 +1,6 @@
 #include "ext_intr.h"
 #include "net_transport.h"
+#include "proto_logic.h"
 #include <arpa/inet.h>
 #include <stdio.h>
 #include <string.h>
@@ -43,11 +44,11 @@ void net_transport_init(uint16_t host_port, const char *peer_ip, uint16_t peer_p
            host_port, peer_ip, peer_port);
 }
 
-void net_transport_tick(void) {
+void net_transport_tick(perunione_context *ctx) {
     if (sock_fd < 0) return;
 
     Packet out;
-    while (last_tosend_pack(&out)) {
+    while (last_tosend_pack(ctx, &out)) {
         ssize_t sent = sendto(sock_fd, out.cont, sizeof(out.cont), 0,
                               (struct sockaddr *)&peer_addr, sizeof(peer_addr));
         if (sent < 0) {
@@ -61,7 +62,7 @@ void net_transport_tick(void) {
     ssize_t n;
     while ((n = recvfrom(sock_fd, in.cont, sizeof(in.cont), 0,
                          (struct sockaddr *)&from, &from_len)) > 0) {
-        recieve_pack(&in);
+        recieve_pack(ctx, &in);
         from_len = sizeof(from);
     }
 }

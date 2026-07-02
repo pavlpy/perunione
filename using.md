@@ -1,4 +1,4 @@
-## 📖 API Usage & Integration Guide
+## API Usage & Integration Guide
 
 `perunione` exports **10 core functions** for complete network and cryptographic control:
 
@@ -15,7 +15,7 @@ PERUN_API bool last_tosend_pack      (perunione_context *ctx, Packet *out_pack);
 PERUN_API void recieve_pack          (perunione_context *ctx, const Packet *pack);
 ```
 
-### 🧠 Understanding the Context
+### Understanding the Context
 
 To utilize this library, you must understand `perunione_context`. This structure encapsulates the entire state of a single cryptographic session. Think of it as `self` in Python or `this` in C++. 
 
@@ -25,6 +25,7 @@ Because of this stateless API design, a single thread or core can handle thousan
 typedef struct contx {
     SessionStatus session_status;
     uint16_t      tx_counter;
+    uint16_t      rx_counter;
     uint32_t      last_sended_pack_id;
     uint32_t      last_getted_pack_id;
 
@@ -51,6 +52,9 @@ typedef struct contx {
     data_container *next_cont;
     uint64_t        container_count;
 
+    /* Public key encryption code (XOR passport) — MITM protection */
+    char key_encrypt_code[128];
+
     /* Callback: called automatically with decrypted payload */
     void (*payload_handler)(const char *data, int len);
 } perunione_context;
@@ -63,7 +67,28 @@ typedef struct pack {
 } Packet;
 ```
 
-### 🚀 Quick Start
+### MITM Protection 
+
+The `key_encrypt_code[128]` field is a static shared secret XOR-mask that protects the ECDH public key exchange against man-in-the-middle attacks. Both peers must have the **identical** 128-byte key.
+The simplest way to store the key is a binary 128-byte file(`passport.key` in this example). In Linux, you can easily generate keys using `/dev/urandom`. 
+Create a 128-byte binary file:
+```bash
+# Example: random 128 bytes
+python3 -c "import os; open('passport.key','wb').write(os.urandom(128))"
+```
+
+Load it into the context before calling `proto_init`:
+```c
+FILE *f = fopen("passport.key", "rb");
+if (f) {
+    fread(ctx.key_encrypt_code, 1, 128, f);
+    fclose(f);
+}
+```
+
+If `key_encrypt_code` is all zeros (default after memset), the tunnel work perfectly, but the handshake has no MITM protection.
+
+### Quick Start
 
 When you want to spin up the protocol and you don't have an active session, simply initialize this structure with zeros, and then assign your custom decryption callback function to the `payload_handler` field:
 
@@ -79,15 +104,19 @@ int main(){
     // Register your high-level message worker callback
     my_peer_ctx.payload_handler = &MyPerfectCallbackHandler;
 
-    // Ready to go!
+    // Load MITM protection key (optional, see section above)
+    // load_passport_key(&my_peer_ctx, "passport.key");
+
+    // Ready to go! (proto_init also calls init_dectbl internally)
     proto_init(&my_peer_ctx);
 }
 ```
-### 📚 Detailed Function Reference
 
-#### ⚙️ Session Life-Cycle
+### Detailed Function Reference
+
+#### Session Life-Cycle
 *   **`void proto_init(perunione_context *ctx);`**
-    Prepares the state machine internal contexts and structures. Run this once per session right after zeroing out the context.
+    Prepares the state machine internal contexts and structures, calls `init_dectbl()` to build the inverse S-box. Run this once per session right after zeroing out the context.
 *   **`void proto_start_handshake(perunione_context *ctx);`**
     Initiates the 1024-bit ECDH handshake. Generates your secure ephemeral private key, computes the public key coordinates, packs them into an `OP_INIT` packet, and pushes it directly to the outgoing ring buffer.
 *   **`void proto_send_disconnect(perunione_context *ctx);`**
@@ -95,26 +124,25 @@ int main(){
 *   **`void proto_reset(perunione_context *ctx);`**
     Instantly wipes all keys, active long-data reassembly chains, and state flags back to `STATUS_DISCONNECTED` without sending wire packets.
 
-#### 🧳 Data Processing & State Machine
+#### Data Processing & State Machine
 *   **`void proto_send_data(perunione_context *ctx, const char *data, int len);`**
-    The main transmission pipe. Automatically checks the `tx_counter` threshold (200 packets). If the safety limits are met, it copies the payload safely into an internal buffer (`Use-After-Free` protection) and runs a renegotiation handshake before chunking the file. Otherwise, encrypts data with 7 rounds of custom cascaded quad-AES and feeds it to the queue.
+    The main transmission pipe. Automatically checks the `tx_counter` threshold (200 packets). If the safety limits are met, it copies the payload safely into an internal buffer and runs a renegotiation handshake before chunking the file. Otherwise, encrypts data with 7 rounds of custom cascaded quad-AES and feeds it to the queue.
 *   **`void proto_update(perunione_context *ctx);`**
-    The core protocol engine tick. Processes incoming data packets from the buffer, runs handshakes, decrypts payload streams, handles long-data fragment assembly, and safely invokes your `payload_handler` callback upon complete message assembly.
+    The core protocol engine tick. Processes one incoming packet from the ring buffer, runs handshakes, decrypts payload streams, handles long-data fragment assembly, and safely invokes your `payload_handler` callback upon complete message assembly.
 
-#### 🪵 Telemetry & Logging
+#### Telemetry & Logging
 *   **`void proto_turn_logs_on(const char *filepath);`**
     Enables internal telemetry. All handshake details, state anomalies, and cryptographic checkpoints will be safely audited to the specified system file.
 *   **`void proto_turn_logs_off(void);`**
     Shuts down the logging subsystem and flushes the open audit descriptors.
 
-#### 🚚 Wire I/O Transport Interface
+#### Wire I/O Transport Interface
 *   **`bool last_tosend_pack(perunione_context *ctx, Packet *out_pack);`**
-    Polled by your network transport loop (e.g., non-blocking UDP `select`). If true, it extracts the oldest encrypted wire-ready frame from the context outgoing queue into `out_pack` (`& BUF_MASK` speed).
+    Polled by your network transport loop (e.g., non-blocking UDP `select`). If true, it extracts the oldest encrypted wire-ready frame from the context outgoing queue into `out_pack`.
 *   **`void recieve_pack(perunione_context *ctx, const Packet *pack);`**
     Injected by your network transport loop whenever a raw UDP frame arrives. Pushes the incoming wire packet directly into the context queue for processing on the next `proto_update` tick.
 
-
-### 💻 Practical Code Snippets
+### Practical Code Snippets
 
 Here is how you actually choreograph these functions inside your application loop.
 
@@ -168,7 +196,7 @@ void send_secure_message(perunione_context *ctx, const char *msg) {
 ```
 
 #### 4. Diagnostic Telemetry Logging
-Enable this at the boot level to audit your bare-metal cryptographic status:
+Enable this at the boot level to audit your cryptographic status:
 
 ```c
 void app_init(perunione_context *ctx) {
@@ -184,7 +212,27 @@ void app_shutdown(perunione_context *ctx) {
 }
 ```
 
+### Building & Testing
+
+```bash
+# Build the library
+make
+
+# Build the messenger (links with .so)
+make messenger
+
+# Run tests (compiles test with src/*.c, no .so needed)
+make test_run
+```
+
+The test suite (`test_libperunione.c`) validates:
+- Encrypt/decrypt roundtrip
+- ECDH key generation and shared secret agreement
+- Full handshake simulation (two contexts via ring buffers)
+- Short and long (multi-packet) data transmission
+- Session reset and disconnect notification
+
 ### Context Safety (Protect the Brain!)
 The `perunione_context` structure contains the highly sensitive session keys (`my_private_key` and `current_shared_secret`). 
 * **Keep it private**: Never leak the context memory into unsafe log dumps, core dumps, or shared public memory spaces. If the context is compromised, the entire session security is broken.
-* **Do not modify internal fields**: Treat the context fields as read-only. **The only field you should safely touch manually is the `payload_handler` callback descriptor.** Manually changing indexes (`tosend_head`, `tx_counter`, etc.) will instantly break the protocol state machine synchronization and result in connection failure or unrecoverable session deadlocks.
+* **Do not modify internal fields**: Treat the context fields as read-only. **The only field you should safely touch manually is the `payload_handler` callback descriptor and `key_encrypt_code` (before proto_init).** Manually changing indexes (`tosend_head`, `tx_counter`, etc.) will instantly break the protocol state machine synchronization and result in connection failure or unrecoverable session deadlocks.
